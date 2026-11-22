@@ -449,6 +449,19 @@ async function fetchT(url, ms = 20000, opts = {}) {
 const isNet = e => e && (e.name === 'TypeError' || e.name === 'AbortError');
 
 /* ---------- routing ---------- */
+// Retire les culs-de-sac : quand un point de passage tombe hors chemin, l'itinéraire va le toucher
+// puis revient sur ses pas. On repère le demi-tour (on repasse sur l'avant-dernier point) et on coupe.
+function despur(coords) {
+  const out = [];
+  for (const c of coords) {
+    const n = out.length;
+    if (n >= 2 && hav(out[n - 2], c) < 0.004) { out.pop(); continue; }
+    if (n && hav(out[n - 1], c) < 0.0005) continue;
+    out.push(c);
+  }
+  // rien de coupé : on garde le tracé d'origine (et le dénivelé calculé par le serveur)
+  return out.length >= 10 && out.length < coords.length ? out : coords;
+}
 async function routeBRouter(pts, profile) {
   const lonlats = pts.map(p => p[1].toFixed(6) + ',' + p[0].toFixed(6)).join('|');
   const res = await fetchT(`https://brouter.de/brouter?lonlats=${lonlats}&profile=${profile}&alternativeidx=0&format=geojson`, 60000);
@@ -459,7 +472,9 @@ async function routeBRouter(pts, profile) {
   }
   const f = (await res.json()).features[0];
   const coords = f.geometry.coordinates.map(c => [c[1], c[0], c[2] != null ? c[2] : null]);
-  const r = buildRoute(coords, parseFloat(f.properties['filtered ascend']));
+  // Boucles seulement : dans un aller-retour, revenir sur ses pas est voulu
+  const clean = pts.length > 3 ? despur(coords) : coords;
+  const r = buildRoute(clean, clean === coords ? parseFloat(f.properties['filtered ascend']) : null);
   r.off = surfaceShare(f.properties.messages);
   return r;
 }
@@ -483,7 +498,8 @@ async function routeOSRM(pts) {
   const res = await fetchT(`https://routing.openstreetmap.de/routed-foot/route/v1/driving/${c}?overview=full&geometries=geojson&continue_straight=true`, 30000);
   const j = await res.json();
   if (j.code !== 'Ok') throw new Error(j.message || j.code);
-  const coords = j.routes[0].geometry.coordinates.map(c => [c[1], c[0], null]);
+  let coords = j.routes[0].geometry.coordinates.map(c => [c[1], c[0], null]);
+  if (pts.length > 3) coords = despur(coords);
   await addElevation(coords);
   return buildRoute(coords, null);
 }
